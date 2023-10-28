@@ -1,11 +1,9 @@
-use fundsp::{
-    prelude::An,
-    wave::{Wave64, Wave64Player},
-};
+use fundsp::wave::Wave64;
 use once_cell::sync::Lazy;
 use std::{collections::HashMap, sync::Arc};
 
-#[derive(PartialEq, Eq, Hash)]
+/// Each token represents a soundbite.
+#[derive(PartialEq, Eq, Hash, Debug)]
 pub enum TOKEN {
     SPACE,
     ZERO,
@@ -23,8 +21,10 @@ pub enum TOKEN {
     SECONDS,
 }
 
-pub static SAMPLE_RATE: f64 = 44100.0;
+/// Sample rate of the embedded tts.wav file.
+pub const SAMPLE_RATE: f64 = 44100.0;
 
+/// A mapping of tokens to sample ranges in the embedded tts.wav file.
 static TABLE: Lazy<HashMap<TOKEN, (usize, usize)>> = Lazy::new(|| {
     HashMap::from([
         (TOKEN::SPACE, (0, 26800)),
@@ -44,6 +44,7 @@ static TABLE: Lazy<HashMap<TOKEN, (usize, usize)>> = Lazy::new(|| {
     ])
 });
 
+/// Convert a string to a vector of tokens, skipping any undefined characters.
 pub fn tokenize(string: &str) -> Vec<TOKEN> {
     string
         .chars()
@@ -67,29 +68,46 @@ pub fn tokenize(string: &str) -> Vec<TOKEN> {
         .collect()
 }
 
+/// Convert a positive integer to a vector of tokens.
+pub fn tokenize_int(mut number: i64) -> Vec<TOKEN> {
+    if number < 0 {
+        Vec::new()
+    } else if number == 0 {
+        vec![TOKEN::ZERO]
+    } else {
+        let mut tokens = vec![];
+        for _ in 0..(number.ilog10() + 1) {
+            tokens.push(match number % 10 {
+                0 => TOKEN::ZERO,
+                1 => TOKEN::ONE,
+                2 => TOKEN::TWO,
+                3 => TOKEN::THREE,
+                4 => TOKEN::FOUR,
+                5 => TOKEN::FIVE,
+                6 => TOKEN::SIX,
+                7 => TOKEN::SEVEN,
+                8 => TOKEN::EIGHT,
+                9 => TOKEN::NINE,
+                _ => unreachable!(),
+            });
+            number /= 10;
+        }
+        tokens.reverse();
+        tokens
+    }
+}
+
+/// Add soundbites specified by `tokens` to `sequencer` starting at time `t`.
+/// Mutate `t` to the end of the last soundbite.
 pub fn synthesize(sequencer: &mut fundsp::sequencer::Sequencer64, t: &mut f64, tokens: Vec<TOKEN>) {
-    let audio = Arc::new(
-        Wave64::load_slice(include_bytes!("../assets/tts.wav"))
-            .expect("Unable to load embedded tts.wav"),
-    );
+    let mut audio = Wave64::load_slice(include_bytes!("../assets/tts.wav"))
+        .expect("Unable to load embedded tts.wav");
+    audio.normalize();
+
+    let audio_arc = Arc::new(audio);
     for token in tokens {
         if let Some((start_time, end_time)) = TABLE.get(&token) {
-            let t1 = *t + (*end_time as f64 / SAMPLE_RATE) - (*start_time as f64 / SAMPLE_RATE);
-            sequencer.push(
-                *t,
-                t1,
-                fundsp::sequencer::Fade::Power,
-                0.1,
-                0.1,
-                Box::new(An(Wave64Player::new(
-                    &audio,
-                    0,
-                    *start_time,
-                    *end_time,
-                    None,
-                ))),
-            );
-            *t = t1;
+            crate::sequence(sequencer, &audio_arc, *start_time, *end_time, t);
         }
     }
 }
